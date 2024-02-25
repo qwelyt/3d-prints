@@ -34,115 +34,189 @@ def sketch_from_wires(wires):
     return skt.sketch
 
 
-def mkswe_sthlm_logo():
-    mks = bd.import_svg("mkswe_sthlm.svg")
-    keys = mks[0:7] + mks[25:]
-    archTower = mks[23:25]
-    towerDetails = mks[7:23]
+def mkswe_sthlm_logo(
+    logo_size=None,
+    base_thickness=20,
+    ring_thickness=30,
+    caps_thickness=10,
+    caps_taper=30,
+    caps_base_thickness=None,
+):
+    def logo_2d(logo_size):
+        mks = bd.import_svg("mkswe_sthlm.svg")
+        keys = mks[0:7] + mks[25:]
+        towerMain = mks[24:25]
+        arch = mks[23:24]
+        towerDetails = mks[7:23]
 
-    ls14bb = ls[14].sketch.bounding_box()
-    with bd.BuildSketch() as cutter:
-        with bd.Locations(bd.Location(ls14bb.center())):
-            bd.Rectangle(ls14bb.size.X, ls14bb.size.Y)
-        bd.add(ls[14].sketch, mode=bd.Mode.SUBTRACT)
-    with bd.BuildSketch() as expected_face:
-        with bd.Locations(bd.Location(ls14bb.center())):
-            bd.Rectangle(ls14bb.size.X, ls14bb.size.Y)
-        bd.add(cutter.sketch, mode=bd.Mode.SUBTRACT)
+        bad14 = sketch_from_wires([mks[14]])
+        ls14bb = bad14.bounding_box()
+        with bd.BuildSketch() as cutter:
+            with bd.Locations(bd.Location(ls14bb.center())):
+                bd.Rectangle(ls14bb.size.X, ls14bb.size.Y)
+            bd.add(bad14, mode=bd.Mode.SUBTRACT)
+        with bd.BuildSketch() as expected_face:
+            with bd.Locations(bd.Location(ls14bb.center())):
+                bd.Rectangle(ls14bb.size.X, ls14bb.size.Y)
+            bd.add(cutter.sketch, mode=bd.Mode.SUBTRACT)
 
-    towerDetails[14] = expected_face.sketch.wire()
-    towerDetails.append(mks[21])
+        towerDetails[14] = expected_face.sketch.wire()
+        towerDetails.append(mks[21])
 
-    with bd.BuildPart() as base:
         with bd.BuildSketch() as cut_tower:
-            bd.add(sketch_from_wires(archTower))
+            bd.add(sketch_from_wires(towerMain))
             bd.add(sketch_from_wires(towerDetails), mode=bd.Mode.SUBTRACT)
-        bd.extrude(amount=20)
 
-    keys_p = []
-    for k in keys:
-        with bd.BuildPart() as ppp:
-            with bd.BuildSketch():
+        with bd.BuildSketch() as ring_skt:
+            bd.add(sketch_from_wires(arch))
+
+        with bd.BuildSketch() as keys_skt:
+            for k in keys:
                 with bd.BuildLine():
                     bd.add(k)
                 bd.make_face()
-            bd.extrude(amount=10, dir=bd.Axis.Z.direction, taper=30)
-        if ppp.part.bounding_box().center().Z < 0:
-            np = ppp.part.mirror(bd.Plane.XY)
-            keys_p.append(np)
+
+        # Move to 0,0 (ish)
+        bb = cut_tower.sketch.bounding_box()
+        mv_x = (bb.min.X + bb.max.X) / 2
+        mv_y = (bb.min.Y + bb.max.Y) / 2
+
+        tower = cut_tower.sketch.translate((mv_x * -1, mv_y * -1, 0))
+        caps = keys_skt.sketch.translate((mv_x * -1, mv_y * -1, 0))
+        ring = ring_skt.sketch.translate((mv_x * -1, mv_y * -1, 0))
+
+        if logo_size is None:
+            return (tower, ring, caps)
         else:
-            keys_p.append(ppp.part)
+            biggest_dim = max(
+                max(tower.bounding_box().size.to_tuple()),
+                max(ring.bounding_box().size.to_tuple()),
+                max(caps.bounding_box().size.to_tuple()),
+            )
+            scale_factor = logo_size / biggest_dim
+            return (
+                tower.scale(scale_factor),
+                ring.scale(scale_factor),
+                caps.scale(scale_factor),
+            )
 
-    with bd.BuildPart() as extruded_keys:
-        for k in keys_p:
-            bd.add(k)
+    _2d = logo_2d(logo_size)
 
-    with bd.BuildPart() as logo:
-        bd.add(base.part)
-        bd.add(extruded_keys.part.move(bd.Location((0, 0, 20))))
-    logo.label = "mkswe_sthlm_logo"
-    return logo
+    with bd.BuildPart() as base:
+        bd.add(_2d[0])
+        bd.extrude(amount=base_thickness)
+
+    with bd.BuildPart() as ring:
+        bd.add(_2d[1])
+        bd.extrude(amount=ring_thickness)
+
+    def extrude_caps(faces, thickness, taper):
+        cap_fix = []
+        for k in faces:
+            with bd.BuildPart() as cf:
+                with bd.BuildSketch():
+                    bd.add(k)
+                bd.extrude(amount=thickness, taper=taper)
+            if cf.part.bounding_box().center().Z < 0:
+                mcf = cf.part.mirror(bd.Plane.XY)
+                cap_fix.append(mcf)
+            else:
+                cap_fix.append(cf)
+        return cap_fix
+
+    extruded_caps = extrude_caps(_2d[2].faces(), caps_thickness, caps_taper)
+    with bd.BuildPart() as caps:
+        if caps_base_thickness:
+            bd.add(extrude_caps(_2d[2].faces(), caps_base_thickness, 0))
+            with bd.Locations(bd.Location((0, 0, caps_base_thickness))):
+                bd.add(extruded_caps)
+        else:
+            bd.add(extruded_caps)
+
+    return (base.part, ring.part, caps.part, _2d)
 
 
-l = mkswe_sthlm_logo()
 # %%
-print(l.part.bounding_box())
-scaled = l.part.scale(0.1)
-print(scaled.bounding_box())
-show(l, scaled)
 
+msl = mkswe_sthlm_logo(
+    logo_size=20,
+    base_thickness=1.5,
+    ring_thickness=2.3,
+    caps_thickness=0.5,
+    caps_taper=10,
+    caps_base_thickness=1.7,
+)
+show(msl)
 
 # %%
-def opener():
+
+
+def opener(text_thickness=1):
+    z_faces = lambda p: p.faces().sort_by(bd.Axis.Z)
     with bd.BuildPart() as prt:
+
+        # Lower box
         with bd.BuildSketch():
             bd.Rectangle(18, 18)
         bd.extrude(amount=15)
 
+        # Fix nice rounded corners
         bd.fillet(prt.edges().filter_by(bd.Axis.Z), 2)
-        bd.fillet(prt.faces().sort_by(bd.Axis.Z)[0].edges(), 2)
+        bd.fillet(z_faces(prt)[0].edges(), 2)
 
-        with bd.BuildSketch(prt.faces().sort_by(bd.Axis.Z)[-1]):
-            bd.Rectangle(14.5, 18)
+        # Fix box for small pegs
+        first_top = prt.faces().sort_by(bd.Axis.Z)[-1]
+        with bd.BuildSketch(first_top):
+            bd.Rectangle(14.5, 15)
+        bd.extrude(amount=4.5)
+        bd.chamfer(z_faces(prt)[-1].edges(), 1.7)
+
+        # Larger pegs, 0.5mm higher than the small pegs
+        with bd.BuildSketch(first_top):
+            bd.Rectangle(8, 18)
         bd.extrude(amount=5)
 
-        top = prt.faces().sort_by(bd.Axis.Z)[-1]
+        top = z_faces(prt)[-1]
+        bd.chamfer(top.edges().filter_by(bd.Axis.X), 1.7)
+
         left = prt.faces().sort_by(bd.Axis.X)[0]
         front = prt.faces().sort_by(bd.Axis.Y)[0]
 
-        bd.chamfer(top.edges(), 1.7)
-
+        # Main cut in the center where the switch goes
         with bd.BuildSketch(top):
             bd.Rectangle(15, 7.2)
-            bd.Rectangle(10.5, 13.6)
+            bd.Rectangle(10.8, 14)
         bd.extrude(amount=-16, mode=bd.Mode.SUBTRACT)
 
+        # Cut the corners at the top
         with bd.BuildSketch(top):
             with bd.GridLocations(13, 15.3, 2, 2):
                 bd.Rectangle(8, 4)
         bd.extrude(amount=-6, mode=bd.Mode.SUBTRACT)
 
+        # Notch in the larger pegs that grip the bottom housing
         with bd.BuildSketch(left):
             with bd.Locations(bd.Location((0, -9.55, 0))):
                 with bd.GridLocations(13.2, 1, 2, 1):
                     bd.Circle(1 / 1.5)
         bd.extrude(amount=-20, mode=bd.Mode.SUBTRACT)
 
+        # Bottom hole
         bd.Hole(2.5)
 
+        # Things are nicer when a bit rounded, no?
         bd.fillet(
-            prt.edges().filter_by_position(bd.Axis.Z, 10, 20)
-            # .filter_by(bd.Axis.Z, reverse=True),
-            ,
-            0.21,
+            prt.edges().filter_by_position(bd.Axis.Z, 13, 20),
+            0.1,
         )
-
         bd.fillet(
             prt.edges()
             .filter_by_position(bd.Axis.Z, -10, 13)
             .filter_by(bd.Axis.Z, reverse=True),
             0.5,
         )
+
+        # Time to brand this opener!
         with bd.BuildSketch(front):
             bd.Text(
                 "Stockholm",
@@ -164,7 +238,7 @@ def opener():
                     font_style=bd.FontStyle.BOLD,
                     align=(bd.Align.CENTER, bd.Align.MAX),
                 )
-        bd.extrude(amount=0.3)
+        bd.extrude(amount=text_thickness)
 
     return prt.part
 
@@ -173,16 +247,28 @@ def opener():
 # print(svg)
 # t = bd.import_svg(svg)
 part = opener()  # .move(bd.Location((0, 0, -2)))
-show(part)
 # %%
-logo = mkswe_sthlm_logo()
+show(
+    part,
+    keycap_opener_back,
+    keycap_opener_right,
+)
 # %%
-slogo = logo.part.scale(0.018)
+# logo = mkswe_sthlm_logo(base_tickness=30)
+logo = mkswe_sthlm_logo(
+    logo_size=15,
+    base_thickness=1.7,
+    ring_thickness=2,
+    caps_thickness=0.3,
+    caps_taper=30,
+    caps_base_thickness=1.8,
+)
+slogo = logo[0] + logo[1] + logo[2]
+rslogo = (
+    slogo.rotate(bd.Axis.X, 90).rotate(bd.Axis.Z, 180).move(bd.Location((0, 8, 10)))
+)
 # %%
 
-rslogo = (
-    slogo.rotate(bd.Axis.X, 90).rotate(bd.Axis.Z, 180).move(bd.Location((5.4, 8.9, 2)))
-)
 show(
     part,
     rslogo,
